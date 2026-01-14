@@ -1,9 +1,8 @@
-# clipmixer
-
-In `main.py`:
-```py
+from time import time
 from src import ClipMixer
 
+
+t = time()
 
 ClipMixer(
     transition_duration=0.5,
@@ -13,7 +12,5 @@ ClipMixer(
     height=1920,
     out_path="out.mp4"
 ).run()
-```
 
-You can customize every value.   
-Built in 1 hour so there may be some frame index errors idk.   
+print(f"Done in {round(time() - t, 2)}s.")
