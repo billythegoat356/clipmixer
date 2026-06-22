@@ -6,10 +6,10 @@ t = time()
 
 ClipMixer(
     transition_duration=0.5,
-    output_duration=60,
-    framerate=60,
-    width=1080,
-    height=1920,
+    output_duration=None,
+    framerate=24,
+    width=1920,
+    height=1080,
     out_path="out.mp4"
 ).run()
 

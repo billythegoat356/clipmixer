@@ -11,6 +11,8 @@ from ovni.utils import get_video_duration, get_video_frame_count, get_video_fram
 
 
 
+BITRATE = '8M'
+PRESET = 'P1'
 
 CLIPS_FOLDER = "clips"
 
@@ -24,7 +26,7 @@ class ClipMixer:
     def __init__(
             self,
             transition_duration: float,
-            output_duration: float,
+            output_duration: float | None,
             framerate: int,
             width: int,
             height: int,
@@ -35,7 +37,7 @@ class ClipMixer:
 
         Parameters:
             transition_duration: float - the duration of each transition, in seconds
-            output_duration: float - the (minimum) duration of the output
+            output_duration: float | None - the (minimum) duration of the output
             framerate: int
             width: int
             height: int
@@ -57,7 +59,7 @@ class ClipMixer:
         frames = self.frames_generator()
 
         frames = pipe_rgb_to_nv12(frames)
-        stream = encode(frames, self.width, self.height, self.framerate)
+        stream = encode(frames, self.width, self.height, self.framerate, BITRATE, PRESET)
         mux(stream, self.out_path)
 
         
@@ -80,7 +82,10 @@ class ClipMixer:
             duration += clip_duration
             final_clips.append(clip)
 
-            if duration - ((len(final_clips) - 1) * self.transition_duration) >= self.output_duration:
+            if (
+                self.output_duration is not None and
+                duration - ((len(final_clips) - 1) * self.transition_duration) >= self.output_duration
+            ):
                 break
 
         return final_clips
