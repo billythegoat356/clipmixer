@@ -1,11 +1,16 @@
+import json
 from os import listdir
 from random import shuffle
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from fractions import Fraction
 from typing import Generator
 import cupy as cp
 
 from ovni.base import demux_and_decode, encode, mux
 from ovni.ops import pipe_nv12_to_rgb, scale_translate, overlay, pipe_rgb_to_nv12
-from ovni.utils import get_video_duration, get_video_frame_count, get_video_framerate, get_video_dimensions, resample_frames
+from ovni.utils import resample_frames
 
 
 
@@ -18,6 +23,15 @@ CLIPS_FOLDER = "clips"
 
 
 OvniGenerator = Generator[cp.ndarray, None, None]
+
+
+@dataclass(frozen=True)
+class ClipInfo:
+    duration: float
+    frame_count: int
+    framerate: float
+    width: int
+    height: int
 
 
 
@@ -49,6 +63,7 @@ class ClipMixer:
         self.width = width
         self.height = height
         self.out_path = out_path
+        self._clip_info: dict[str, ClipInfo] = {}
 
 
     def run(self):
@@ -63,6 +78,33 @@ class ClipMixer:
         mux(stream, self.out_path)
 
         
+    @staticmethod
+    def probe_clip(clip: str) -> ClipInfo:
+        clip_path = CLIPS_FOLDER + '/' + clip
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries",
+                "format=duration:stream=width,height,avg_frame_rate,nb_frames",
+                "-of", "json",
+                clip_path,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        data = json.loads(result.stdout)
+        stream = data["streams"][0]
+        return ClipInfo(
+            duration=float(data["format"]["duration"]),
+            frame_count=int(stream["nb_frames"]),
+            framerate=float(Fraction(stream["avg_frame_rate"])),
+            width=int(stream["width"]),
+            height=int(stream["height"]),
+        )
+
+
     def get_clips(self) -> list[str]:
         """
         Gets the list of clips to use, randomly chosen, in order to exceed output duration
@@ -73,11 +115,14 @@ class ClipMixer:
         all_clips = listdir(CLIPS_FOLDER)
         shuffle(all_clips)
 
+        with ThreadPoolExecutor(max_workers=min(32, len(all_clips))) as pool:
+            self._clip_info = dict(zip(all_clips, pool.map(self.probe_clip, all_clips)))
+
         final_clips = []
         duration = 0
 
         for clip in all_clips:
-            clip_duration = get_video_duration(CLIPS_FOLDER + '/' + clip)
+            clip_duration = self._clip_info[clip].duration
 
             duration += clip_duration
             final_clips.append(clip)
@@ -158,12 +203,13 @@ class ClipMixer:
         # Lists storing clips frame count and generators
         clips_frame_count: list[int] = []
         clips_generators: list[OvniGenerator] = []
+        clips_consumed_frames = [0] * len(clips)
 
         for clip in clips:
             clip_path = CLIPS_FOLDER + '/' + clip
-
-            clip_frame_count = get_video_frame_count(clip_path)
-            clip_framerate = get_video_framerate(clip_path)
+            info = self._clip_info[clip]
+            clip_frame_count = info.frame_count
+            clip_framerate = info.framerate
 
             resampled_frame_count = int(self.framerate / clip_framerate * clip_frame_count) # ovni never adds last one when resampling!
             clips_frame_count.append(resampled_frame_count)
@@ -172,7 +218,7 @@ class ClipMixer:
             clip_gen = demux_and_decode(clip_path)
             clip_gen = resample_frames(clip_gen, clip_framerate, self.framerate)
 
-            width, height = get_video_dimensions(clip_path)
+            width, height = info.width, info.height
             clip_gen = pipe_nv12_to_rgb(clip_gen, width, height)
             clip_gen = self.adjust_dims(clip_gen, width, height)
 
@@ -186,26 +232,21 @@ class ClipMixer:
                 yield from clips_generators[i]
                 break
 
-            frame_i = 0
+            frame_i = clips_consumed_frames[i]
 
             for frame1 in clips_generators[i]:
 
                 left_seconds = (clips_frame_count[i] - (frame_i + 1)) / self.framerate
 
-                # If not the first one, remove the transition duration, that happened previously
-                if i != 0:
-                    left_seconds -= self.transition_duration
-
                 # If in the transition period, mix frames
-                if left_seconds <= self.transition_duration:
+                if left_seconds < self.transition_duration:
                     opacity = 1 - (left_seconds / self.transition_duration)
 
                     frame2 = next(clips_generators[i+1])
+                    clips_consumed_frames[i+1] += 1
 
                     overlay(frame1, frame2, 0, 0, opacity)
                 
                 yield frame1
 
                 frame_i += 1
-
-
